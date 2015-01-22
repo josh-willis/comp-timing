@@ -105,8 +105,9 @@ if opt.long_output:
             opt.problem, setup_time, mean_str, throughput))
     print("    min time: {0}, max time: {1}, std. dev: {2}\n".format(min_str, max_str, std_str))
 else:
-    print("{0} {1:g} {2} {3} {4} {5} {6:g}".format(opt.problem, setup_time, trans_min, trans_mean, 
-                                             trans_max, trans_std, throughput))
+    print("{0} {1} {2:g} {3} {4} {5} {6} {7:g}".format(opt.problem, opt.method, setup_time, 
+                                                       trans_min, trans_mean, 
+                                                       trans_max, trans_std, throughput))
 
 
 
