@@ -26,19 +26,6 @@ import ctypes
 from pycbc import libutils
 from math import sqrt
 
-class BaseTransProblem(_mb.MultiBenchProblem):
-    def __init__(self, sizer, sizec, inplace = True):
-        # We'll do some arithmetic with these, so sanity check first:
-        if (sizer < 1) or (sizec < 1):
-            raise ValueError("size must be >= 1")
-        # Note that we're transposing square matrices...
-        if not inplace:
-            self.output = zeros(sizer*sizec, dtype=complex64)
-        self.input = zeros(sizer*sizec, dtype=complex64)
-
-    def _setup(self):
-        pass
-
 # Several of the OpenMP based approaches use this
 #max_chunk = 4096
 max_chunk = 8192
@@ -99,7 +86,9 @@ class BaseTransProblem(_mb.MultiBenchProblem):
         # We'll do some arithmetic with these, so sanity check first:
         if (nrows < 1) or (ncols < 1):
             raise ValueError("size must be >= 1")
-        # Note that we're transposing square matrices...
+        self.nrows = nrows
+        self.ncols = ncols
+        self.inplace = inplace
         self.input = zeros(nrows*ncols, dtype=complex64)
         if inplace:
             self.output = self.input
@@ -109,7 +98,8 @@ class BaseTransProblem(_mb.MultiBenchProblem):
         self.optr = self.output.ptr
 
     def _setup(self):
-        self.plan = plan_transpose(nrows, ncols, inplace, _scheme.mgr.state.num_threads)
+        self.plan = plan_transpose(self.nrows, self.ncols, self.inplace,
+                                   _scheme.mgr.state.num_threads)
 
     def execute(self):
         fexecute(self.plan, self.iptr, self.optr)
