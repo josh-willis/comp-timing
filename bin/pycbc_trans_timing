@@ -101,7 +101,7 @@ throughput = size/(trans_mean*ncores)
 if opt.long_output:
     mean_str, min_str, max_str, std_str = multibench.format_time_strings([trans_mean, trans_min, trans_max, trans_std])
     print("Problem: {0}, setup: {1:g} s, mean time: {2},"
-          " throughput/core: {4:g}".format(
+          " throughput/core: {3:g}".format(
             opt.problem, setup_time, mean_str, throughput))
     print("    min time: {0}, max time: {1}, std. dev: {2}\n".format(min_str, max_str, std_str))
 else:
