@@ -68,6 +68,8 @@ setup (
         'bin/pycbc_corr_timing',
         'bin/pycbc_corr_dummy',
         'bin/pycbc_thresh_timing',
-        'bin/pycbc_thresh_dummy'
+        'bin/pycbc_thresh_dummy',
+        'bin/pycbc_trans_make_wisdom',
+        'bin/pycbc_trans_timing'
         ]
     )

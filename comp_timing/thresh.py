@@ -17,6 +17,10 @@
 import multibench as _mb
 from pycbc.types import zeros, complex64, complex128, float32, float64, Array
 from pycbc.events.threshold_cpu import threshold_inline, threshold_numpy
+try:
+    from pycbc.events.threshold_cpu import threshold_simd
+except:
+    threshold_simd = None
 from pycbc.events.threshold_cpu import omp_flags, omp_libs
 from pycbc import scheme as _scheme
 from scipy.weave import inline
@@ -75,7 +79,22 @@ class WeaveThreshProblem(BaseThreshProblem):
         # To setup, we just run once, which compiles and caches the code
         self.execute()
 
-new_support = """
+class NewPyCBCThreshProblem(BaseThreshProblem):
+    def __init__(self, size):
+        if threshold_simd is None:
+            raise RuntimeError("Your version of PyCBC does not have threshold_simd")
+        super(NewPyCBCThreshProblem, self).__init__(size=size)
+
+    def execute(self):
+        threshold_simd(self.input, self.threshhold[0])
+
+    def _setup(self):
+        # To setup, we just run once, which compiles and caches the code
+        self.execute()
+
+
+
+new_support_save = """
 #include <stdlib.h>
 #include <math.h>
 #include <omp.h>
@@ -351,6 +370,156 @@ static inline void copy_above(const float* __restrict__ input,
 }
 """
 
+new_support = """
+#include <stdlib.h>
+#include <math.h>
+#include <omp.h>
+#include <x86intrin.h>
+#include <stdint.h>
+
+#ifdef __AVX__
+#define _HAVE_AVX 1
+#else
+#define _HAVE_AVX 0
+#endif
+
+#ifdef __SSE3__
+#define _HAVE_SSE3 1
+#else
+#define _HAVE_SSE3 0
+#endif
+
+#define ROUND_DOWN(x, s) ((x) & ~((s)-1))
+
+void count_thresh(const float* __restrict__ input, 
+                  unsigned int* __restrict__ count_loc, const float tsqr, 
+                  const unsigned int N){
+
+  // This function passes through the data first, counting the number
+  // of points in each parallel segment that are above threshhold.
+  //
+  // Note that we pass in the squared value of the threshhold.
+
+  unsigned int i, c;
+
+  c = 0;
+
+#if _HAVE_AVX
+
+  __m256 thr2, in2, in2_swap;
+  int mask;
+  // Put it on a cache line boundary
+  const unsigned int count_table[16] __attribute__ ((aligned(64))) = {0, 1, 1, 2,
+                                                                      1, 2, 2, 3,
+                                                                      1, 2, 2, 3,
+                                                                      2, 3, 3, 4};                                        
+  _mm_prefetch(count_table, _MM_HINT_T0);
+
+  thr2 = _mm256_broadcast_ss(&tsqr);
+
+  for (i = 0; i < N; i += 8){
+    in2 = _mm256_load_ps(input+i);
+    in2 = _mm256_mul_ps(in2, in2);                  // re*re, im*im
+    in2_swap = _mm256_shuffle_ps(in2, in2, 0xB1B1); // swap real and imaginary
+    in2 = _mm256_add_ps(in2, in2_swap);             // Add, so now re^2 +im^2
+    in2 = _mm256_cmp_ps(in2, thr2, _CMP_GT_OQ);     // Compare to squared threshold:
+    // Extract high bits of comparison into int. Cast allows 16 entry table
+    // rather than 256 entry table
+    mask = _mm256_movemask_pd(_mm256_castps_pd(in2)); 
+    c += count_table[mask];
+  }
+  
+#elif _HAVE_SSE3
+
+  __m128 thr2, in2, in2_swap;
+  int mask;
+  unsigned int count_table[4] = {0, 1, 1, 2};
+
+  thr2 = _mm_broadcast_ss(&tsqr);
+
+  for (i = 0; i < N; i += 4){
+    in2 = _mm_load_ps(input+i);
+    in2 = _mm_mul_ps(in2, in2);                  // re*re, im*im
+    in2_swap = _mm_shuffle_ps(in2, in2, 0xB1);   // swap real and imaginary
+    in2 = _mm_add_ps(in2, in2_swap);             // Add, so now re^2 +im^2
+    in2 = _mm_cmpgt_ps(in2, thr2);               // Compare to squared threshold:
+    // Extract high bits of comparison into int. Cast allows 4 entry table
+    // rather than 16 entry table
+    mask = _mm_movemask_pd(_mm_castps_pd(in2)); 
+    c += count_table[mask];
+  }
+
+#else
+
+  float re, im;
+
+  for (i = 0; i < N; i +=2){
+    re = input[i];
+    im = input[i+1];
+    if ( (re*re + im*im) > tsqr){
+      c++;
+    }
+  }
+
+#endif
+
+  *count_loc = c;
+
+  return;
+}
+
+static inline unsigned int excl_prefix_sum(unsigned int* __restrict__ count_arr, const unsigned int len){
+
+  unsigned int i, inim1, tmp;
+
+  // This function does a (serial) exclusive prefix sum on the array count_arr, in-place.
+  // It returns the sum of *all* elements in the array (which would conceptually be the
+  // value that would be just past the end of the exclusive sum array). 
+
+  inim1 = count_arr[0];
+  count_arr[0] = 0;
+  for (i = 1; i < len; i++){
+    tmp = count_arr[i];
+    count_arr[i] = inim1 + count_arr[i-1];
+    inim1 = tmp;
+  }
+
+  return (count_arr[len-1] + inim1);
+
+}
+
+static inline void copy_above(const float* __restrict__ input, 
+                              float* __restrict__ vals, unsigned int * __restrict__ locs, 
+                              const float tsqr, const unsigned int N,
+                              const unsigned int in_offset) {
+
+ // This function passes through the data once more, using the number of points above threshhold
+ // in this segment to know (deterministically) where to write the values and locations of those
+ // points that are above threshhold.  It is *critical* to the correct behavior of the overall
+ // algorithm that the segmentation and also the matching between a segment and threadno be the same
+ // for this function as for the preceding two.
+
+  unsigned int offset, i, c;
+  float re, im, t2;
+
+  // Copies:
+  t2 = tsqr;
+
+  c = 0;
+  for (i = 0; i < N; i += 2){
+    re = input[i];
+    im = input[i+1];
+    if ((re*re + im*im) > t2){
+      vals[c] = re;
+      vals[c + 1] = im;
+      locs[c/2] = i/2 + in_offset;
+      c += 2;
+    }
+  }
+
+}
+"""
+
 new_code = """
 // This code performs an OMP parallelized threshholding using the
 // three functions defined in 'new_support' above. The basic strategy
@@ -403,7 +572,7 @@ class StaticThreshProblem(BaseThreshProblem):
         print "size = {0}, ncpus = {1}, CHUNKSIZE = {2}".format(size, ncpus, self.chunksize)
         self.thecode = new_code.replace('CHUNKSIZE', str(self.chunksize))
         self.thecode = self.thecode.replace('NLEN', str(size))
-        nchunk = int(size/self.chunksize)
+        nchunk = int(2*size/self.chunksize)
         if (nchunk*self.chunksize != size):
             # We didn't divide evenly
             self.nchunk = nchunk + 1
@@ -602,7 +771,8 @@ _class_dict = { 'numpy' : NumpyThreshProblem,
                 'ct_sum' : CT_SumProblem,
                 'ct_copy' : CT_CopyProblem,
                 'ct_batch' : CT_BatchProblem,
-                'ct_thresh2' : CT_Thresh2Problem
+                'ct_thresh2' : CT_Thresh2Problem,
+                'new_pycbc' : NewPyCBCThreshProblem
                }
 
 thresh_valid_methods = _class_dict.keys()

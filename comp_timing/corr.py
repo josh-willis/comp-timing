@@ -73,10 +73,6 @@ class NewPyCBCCorrProblem(BaseCorrProblem):
     def __init__(self, size, dtype):
         if correlate_simd is None:
             raise RuntimeError("Your version of PyCBC does not have correlate_simd")
-        if size != 1048576:
-            raise RuntimeError("Current hacky version requires size = 1048576")
-        if dtype is not complex64:
-            raise RuntimeError("Current hacky version requires single precision")
         super(NewPyCBCCorrProblem, self).__init__(size=size, dtype=dtype)
 
     def execute(self):
@@ -321,25 +317,28 @@ static inline void ccmul(float * __restrict a, float * __restrict b, float * __r
 int i;
 
 #if _HAVE_AVX
-
-for (i = 0; i < N-8; i += 8){
-  __m256 a_re, a_im, b_flip;
+  __m256 a_re, a_im, b_flip, zeros;
   __m256 a1, b1, aib1, arb1;
+
+  zeros = _mm256_setzero_ps();
+
+  for (i = 0; i < N; i += 8){
  
-  // Load everything into registers
+    // Load everything into registers
 
-  a1 = _mm256_load_ps(a+i);
-  b1 = _mm256_load_ps(b+i);
+    a1 = _mm256_load_ps(a+i);
+    b1 = _mm256_load_ps(b+i);
 
-  a_re = _mm256_shuffle_ps(a1, a1, 0xA0A0);
-  arb1 = _mm256_mul_ps(a_re, b1);
-  a_im = _mm256_shuffle_ps(a1, a1, 0xF5F5);
-  b_flip = _mm256_shuffle_ps(b1, b1, 0xB1B1);
-  aib1 = _mm256_mul_ps(a_im, b_flip);
-  a1 = _mm256_addsub_ps(arb1, aib1);
+    a_re = _mm256_shuffle_ps(a1, a1, 0xA0A0);
+    arb1 = _mm256_mul_ps(a_re, b1);
+    a_im = _mm256_shuffle_ps(a1, a1, 0xF5F5);
+    a_im = _mm256_sub_ps(zeros, a_im);
+    b_flip = _mm256_shuffle_ps(b1, b1, 0xB1B1);
+    aib1 = _mm256_mul_ps(a_im, b_flip);
+    a1 = _mm256_addsub_ps(arb1, aib1);
 
-  _mm256_store_ps(c+i, a1);
-}
+    _mm256_store_ps(c+i, a1);
+  }
 
 #endif
 
@@ -745,7 +744,7 @@ class AVX_OMP_CorrProblem(BaseCorrProblem):
         if dtype != complex64:
             raise RuntimeError("SIMD only supports single-precision complex.")
         super(AVX_OMP_CorrProblem, self).__init__(size=size, dtype=dtype)
-        n = size/max_chunk
+        n = 2*size/max_chunk
         tmpcode = simd_omp_code_float.replace('NUM_THREADS', str(n))
         self.thecode = tmpcode.replace('NBLOCK', str(max_chunk))
 
@@ -770,7 +769,7 @@ class SSE3_OMP_CorrProblem(BaseCorrProblem):
         if dtype != complex64:
             raise RuntimeError("SIMD only supports single-precision complex.")
         super(SSE3_OMP_CorrProblem, self).__init__(size=size, dtype=dtype)
-        n = size/max_chunk
+        n = 2*size/max_chunk
         tmpcode = simd_omp_code_float.replace('NUM_THREADS', str(n))
         self.thecode = tmpcode.replace('NBLOCK', str(max_chunk))
 
@@ -821,7 +820,7 @@ class Static_OMP_CorrProblem(BaseCorrProblem):
         if dtype != complex64:
             raise RuntimeError("SIMD only supports single-precision complex.")
         super(Static_OMP_CorrProblem, self).__init__(size=size, dtype=dtype)
-        n = size/max_chunk
+        n = 2*size/max_chunk
         tmpcode = simd_omp_code_float.replace('NUM_THREADS', str(n))
         self.thecode = tmpcode.replace('NBLOCK', str(max_chunk))
 
@@ -830,8 +829,8 @@ class Static_OMP_CorrProblem(BaseCorrProblem):
         bb = _np.array(self.y.data, copy=False).view(dtype = float32)
         cc = _np.array(self.z.data, copy=False).view(dtype = float32)
         inline(self.thecode, ['aa', 'bb', 'cc'],
-               #extra_compile_args=['-march=native -fprefetch-loop-arrays -funroll-loops -O3 -w'] + omp_flags,
-               extra_compile_args=['-O3 -w'] + omp_flags,
+               extra_compile_args=['-march=native -fprefetch-loop-arrays -funroll-loops -O3 -w'] + omp_flags,
+               #extra_compile_args=['-O3 -w'] + omp_flags,
                support_code = static_omp_support,
                auto_downcast = 1,
                libraries = omp_libs)
@@ -852,7 +851,8 @@ _class_dict = { 'numpy' : NumpyCorrProblem,
                 'simd_asoa' : SIMD_ASOA_CorrProblem,
                 'avx_omp' : AVX_OMP_CorrProblem,
                 'sse3_omp' : SSE3_OMP_CorrProblem,
-                'static_omp' : Static_OMP_CorrProblem
+                'static_omp' : Static_OMP_CorrProblem,
+                'new_pycbc' : NewPyCBCCorrProblem
                 }
 
 corr_valid_methods = _class_dict.keys()

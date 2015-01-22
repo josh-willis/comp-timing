@@ -65,6 +65,7 @@ with ctx:
     setup_time = ourprob.setup_time
     # Find the needed number of repetitions:
     nexecute = ourprob.needed_n(opt.mbench_time)
+    print "Min time for loop: {0}; needed iterations: {1}".format(opt.mbench_time, nexecute)
     nrepeats = opt.mbench_repeats
     try:
         ncores = ctx.num_threads
