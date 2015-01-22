@@ -1,0 +1,91 @@
+#!/usr/bin/env python
+
+# Copyright (C) 2014 Josh Willis
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+# Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+import multibench
+import cProfile
+import comp_timing
+import sys, argparse, math
+from scipy import mean, std
+from numpy import array
+from pycbc import scheme, fft
+
+parser = argparse.ArgumentParser(description = "Benchmark complex matrix transposition.")
+
+parser.add_argument("--problem",
+                    help = "String describing the problem to benchmark, in the form"
+                    " <size>.")
+parser.add_argument("--long-output",
+                    help = "Give a verbose, explanatory output for the results."
+                    " Otherwise, print <problem> <min> <mean> <max> <stdev>"
+                    " <mflops> <througput> in that order",
+                    action="store_true")
+#parser.add_argument("--method",
+#                    help = "Which threshhold method to use",
+#                    choices = comp_timing.trans_valid_methods,
+#                    default = comp_timing.trans_valid_methods[0])
+parser.add_argument('--profile-outfile',
+                    help = "File to which to write PStats output",
+                    default=None)
+
+# Now call functions to parse arguments from modules
+multibench.insert_timing_option_group(parser)
+scheme.insert_processing_option_group(parser)
+fft.insert_fft_option_group(parser)
+
+# And parse
+opt = parser.parse_args()
+
+# Check that the values returned for the options make sense
+scheme.verify_processing_options(opt, parser)
+fft.verify_fft_options(opt,parser)
+
+# Do what we can with command line options
+ctx = scheme.from_cli(opt)
+fft.from_cli(opt)
+
+if (opt.fft_backends[0] == 'fftw'):
+    # We know we gave FFTW parameters on the command line
+    if opt.fftw_input_float_wisdom_file is not None:
+        fft.fftw.import_single_wisdom_from_filename(opt.fftw_input_float_wisdom_file)
+    if opt.fftw_output_float_wisdom_file is None:
+        raise RuntimeError("Cannot make wisdom file without specifying --fftw-output-float-wisdom-file")
+
+method_list = []
+
+for method in comp_timing.trans_valid_methods:
+    prob_class, size = comp_timing.parse_trans_problem(opt.problem, method)
+    method_list.append((prob_class, size, method))
+
+plan_times = []
+with ctx:
+    # Create the problem instance:
+    for (prob_class, size, method) in method_list:
+        ourprob = prob_class(size)
+    # Find the planning time:
+        ourprob.setup()
+        setup_time = ourprob.setup_time
+        plan_times.append(setup_time)
+        if opt.long_output:
+            print "Planning time for method {0} on problem of size {1}: {2} sec".format(method,
+                                                                                        size,
+                                                                                        setup_time)
+
+if (opt.fft_backends[0] == 'fftw'):
+    # We know we gave FFTW parameters on the command line
+    if opt.fftw_output_float_wisdom_file:
+        fft.fftw.export_single_wisdom_to_filename(opt.fftw_output_float_wisdom_file)
