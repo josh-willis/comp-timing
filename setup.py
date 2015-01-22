@@ -70,6 +70,7 @@ setup (
         'bin/pycbc_thresh_timing',
         'bin/pycbc_thresh_dummy',
         'bin/pycbc_trans_make_wisdom',
-        'bin/pycbc_trans_timing'
+        'bin/pycbc_trans_timing',
+        'bin/pycbc_trans_dummy'
         ]
     )
