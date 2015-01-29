@@ -829,7 +829,7 @@ class Static_OMP_CorrProblem(BaseCorrProblem):
         bb = _np.array(self.y.data, copy=False).view(dtype = float32)
         cc = _np.array(self.z.data, copy=False).view(dtype = float32)
         inline(self.thecode, ['aa', 'bb', 'cc'],
-               extra_compile_args=['-march=native -fprefetch-loop-arrays -funroll-loops -O3 -w'] + omp_flags,
+               extra_compile_args=['-march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'] + omp_flags,
                #extra_compile_args=['-O3 -w'] + omp_flags,
                support_code = static_omp_support,
                auto_downcast = 1,
