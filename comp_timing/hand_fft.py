@@ -16,7 +16,7 @@
 
 import multibench as _mb
 from pycbc.types import zeros, complex64, complex128, float32, float64, Array
-from pycbc.fft.fftw_pruned import plan_transpose, fft_transpose_fftw
+#from pycbc.fft.fftw_pruned import plan_transpose, fft_transpose_fftw
 import pycbc.fft
 import pycbc.fft.fftw as _fftw
 from pycbc import scheme as _scheme
@@ -81,7 +81,7 @@ def plan_transpose(nrows, ncols, inplace, nthreads):
 
     return res
 
-def plan_batched(nsize, nbatch, padding, inplace, nthreads):
+def plan_batched(nsize, nbatch=1, padding=0, inplace=False, nthreads=1):
     """
     A function to create an FFTW plan for a batched, strided,
     possibly multi-threaded transform.
@@ -119,76 +119,138 @@ def plan_batched(nsize, nbatch, padding, inplace, nthreads):
 
     return res
 
+hand_fft_support = """
+#include <complex.h>
+#include <fftw3.h>
+#include <omp.h>
+"""
+
+hand_fft_libs = ['fftw3f', 'fftw3f_omp', 'gomp', 'm']
+# The following could return system libraries, but oh well,
+# shouldn't hurt anything
+hand_fft_libdirs = libutils.pkg_config_libdirs(['fftw3f'])
+
+# The code to do an FFT by hand.  Called using weave. Requires:
+#     NJOBS1, NJOBS2, NCHUNK1, and NCHUNK2 to be substituted
+#           before compilation
+# Input arrays: vin, vout, vscratch
+# Input plan arrays: plan1, plan2
+# Input plans: tplan1, tplan2
+#
+hand_fft_code = """
+int j;
+
+// First, execute half the FFTs for first phase
+#pragma omp parallel for schedule(static)
+for (j = 0; j < NJOBS1; j++){
+   int tid = omp_get_thread_num();
+   fftwf_execute_dft(plan1[tid], &vin[j*NCHUNK1], &vscratch[j*NCHUNK1]);
+}
+
+// Next, transpose (really need a twiddle before but we're just
+// ballparking)
+
+fftwf_execute_dft(tplan1[0], vscratch, vout);
+
+// Again, parallel
+#pragma omp parallel for schedule(static)
+for (j = 0; j < NJOBS2; j++){
+   int tid = omp_get_thread_num();
+   fftwf_execute_dft(plan2[tid], &vout[j*NCHUNK2], &vscratch[j*NCHUNK2]);
+}
+
+// Finally, transpose again
+
+fftwf_execute_dft(tplan2[0], vscratch, vout);
+
+"""
+
+
 def check_pow_two(n):
     return ( (n != 0) and ( (n & (n-1)) == 0) )
 
+PAD_LEN = 8
+
 class BaseHandFFTProblem(_mb.MultiBenchProblem):
-    def __init__(self, size, inplace = False):
+    def __init__(self, size, inplace = False, padding = True):
         # We'll do some arithmetic with these, so sanity check first:
         if not check_pow_two(size):
             raise ValueError("Only power-of-two sizes supported")
         if not 
 
+        self.ncpus = _scheme.mgr.state.num_threads
+        self.size = size
+        self.nfirst = 2 ** int(_np.log2( size ) / 2)
+        self.nsecond = size/self.nfirst
 
-        if (nrows < 1) or (ncols < 1):
-            raise ValueError("size must be >= 1")
-        self.nrows = nrows
-        self.ncols = ncols
-        self.inplace = inplace
-        self.input = zeros(nrows*ncols, dtype=complex64)
-        if inplace:
-            self.output = self.input
+        if padding:
+            self.padding = PAD_LEN
         else:
-            self.output = zeros(nrows*ncols, dtype=complex64)
-        self.iptr = self.input.ptr
-        self.optr = self.output.ptr
+            self.padding = 0
+
+        self.vsize = (self.nfirst + self.padding) * (self.nsecond + self.padding)
+        self.invec = zeros(self.vsize, dtype = complex64)
+        self.inplace = inplace
+        if inplace:
+            self.outvec = self.invec
+        else:
+            self.outvec = zeros(self.vsize, dtype = complex64)
+        # For our transpositions
+        self.tmpvec = zeros(self.vsize, dtype = complex64)
+        # Pointers are probably 64 bits; leave enough space just in case
+        self.firstplans = _np.zeros(self.ncpus, dtype = _np.uint64)
+        self.secondplans = _np.zeros(self.ncpus, dtype = _np.uint64)
+        self.tplan1 = _np.zeros(1, dtype = _np.uint64)
+        self.tplan2 = _np.zeros(1, dtype = _np.uint64)
+        self.nbatch1 = max_chunk/self.nfirst
+        self.nbatch2 = max_chunk/self.nsecond
+        tmpcode = hand_fft_code.replace('NJOBS1', str(self.size/max_chunk))
+        tmpcode = tmpcode.replace('NJOBS2', str(self.size/max_chunk))
+        tmpcode = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
+        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
+        del tmpcode
 
     def _setup(self):
-        self.plan = plan_transpose(self.nrows, self.ncols, self.inplace,
-                                   _scheme.mgr.state.num_threads)
+        # Our transposes are executed using all available threads, and always out-of-place
+        self.tplan1[0] = plan_transpose(self.nsecond + self.padding, self.nfirst + self.padding,
+                                        inplace = False, _scheme.mgr.state.num_threads)
+        self.tplan2[0] = plan_transpose(self.nsecond + self.padding, self.nfirst + self.padding,
+                                        inplace = False, _scheme.mgr.state.num_threads)
+        # Our batched FFTs are executed using a single thread, since they will be called
+        # from inside an OpenMP parallel region. We make a plan for each cpu, so that
+        # there is not contention to read the plans (and they can stay in cache).
+        for i in range(0, self.ncpus):
+            self.firstplans[i] = plan_batched(self.nfirst, self.nbatch1, self.padding, 
+                                              inplace = False, nthreads = 1)
+            self.secondplans[i] = plan_batched(self.nsecond, self.nbatch2, self.padding, 
+                                               inplace = False, nthreads = 1)
 
     def execute(self):
-        fexecute(self.plan, self.iptr, self.optr)
+        vin = _np.array(self.invec.data, copy = False)
+        vout = _np.array(self.outvec.data, copy = False)
+        vscratch = _np.array(self.tmpvec.data, copy = False)
+        plan1 = _np.array(self.firstplans.data, copy = False)
+        plan2 = _np.array(self.secondplans.data, copy = False)
+        tplan1 = _np.array(self.tplan1, copy = False)
+        tplan2 = _np.array(self.tplan2, copy = False)
+        inline(self.code, ['vin', 'vout', 'vscratch', 'plan1', 'plan2', 'tplan1', 'tplan2'],
+               extra_compile_args=['-fopenmp'], libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
+               support_code = hand_fft_support)
 
 # Now our derived classes
-class InplaceTransProblem(BaseTransProblem):
-    def __init__(self, size):
-        super(InplaceTransProblem, self).__init__(nrows = size, ncols = size, inplace = True)
-            
-class OutplaceTransProblem(BaseTransProblem):
-    def __init__(self, size):
-        super(OutplaceTransProblem, self).__init__(nrows = size, ncols = size, inplace = False)
 
-# Padding calculation: 32 byte alignement/ (8 bytes per complex64) = 4
-pad = 4
-
-class InplacePaddedTransProblem(BaseTransProblem):
-    def __init__(self, size):
-        size = size+4
-        super(InplacePaddedTransProblem, self).__init__(nrows = size, ncols = size, inplace = True)
-            
-class OutplacePaddedTransProblem(BaseTransProblem):
-    def __init__(self, size):
-        size = size+4
-        super(OutplacePaddedTransProblem, self).__init__(nrows = size, ncols = size, inplace = False)
-
-_class_dict = { 'inplace' : InplaceTransProblem,
-                'outplace' : OutplaceTransProblem,
-                'inplace_padded' : InplacePaddedTransProblem,
-                'outplace_padded' : OutplacePaddedTransProblem
+_class_dict = { 'hand_fft' : BaseHandFFTProblem
                }
 
-trans_valid_methods = _class_dict.keys()
+hand_fft_valid_methods = _class_dict.keys()
 
-def parse_trans_problem(probstring, method='inplace'):
+def parse_hand_fft_problem(probstring, method):
     """
     This function takes a string of the form <number>
 
-    It also takes another argument, a string indicating which class
-    type to return. 
 
     It returns the class and size, so that the call:
-        MyClass, n = parse_trans_problem(probstring, method)
+        MyClass, n = parse_trans_problem(probstring)
     should usually be followed by:
         MyProblem = MyClass(n)
     """
