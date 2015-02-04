@@ -1,0 +1,12 @@
+CXX = icpc
+CXXFLAGS = -O3 -openmp -xHOST -opt-prefetch-distance=8
+RM = rm
+#CCLIBDIRS = /home/jwillis/root/gcc/lib64
+LDFLAGS = -Wl,-rpath,/opt/intel/advisor_xe/lib64 -Wl,-rpath,/opt/intel/composerxe/ipp/lib/intel64 -Wl,-rpath,/opt/intel/composerxe/mkl/lib/intel64
+
+transpose:
+	$(CXX) -o transpose.o -c $(CXXFLAGS) -fPIC Transpose.cc
+	$(CXX) -o libtranspose.so -shared -openmp  transpose.o 
+
+clean: 
+	rm -f *.o *.so

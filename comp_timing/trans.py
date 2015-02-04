@@ -114,16 +114,16 @@ class OutplaceTransProblem(BaseTransProblem):
         super(OutplaceTransProblem, self).__init__(nrows = size, ncols = size, inplace = False)
 
 # Padding calculation: 32 byte alignement/ (8 bytes per complex64) = 4
-pad = 4
+pad = 8
 
 class InplacePaddedTransProblem(BaseTransProblem):
     def __init__(self, size):
-        size = size+4
+        size = size+pad
         super(InplacePaddedTransProblem, self).__init__(nrows = size, ncols = size, inplace = True)
             
 class OutplacePaddedTransProblem(BaseTransProblem):
     def __init__(self, size):
-        size = size+4
+        size = size+pad
         super(OutplacePaddedTransProblem, self).__init__(nrows = size, ncols = size, inplace = False)
 
 _class_dict = { 'inplace' : InplaceTransProblem,

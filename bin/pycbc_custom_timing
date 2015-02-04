@@ -36,8 +36,8 @@ parser.add_argument("--long-output",
                     action="store_true")
 parser.add_argument("--method",
                     help = "Which threshhold method to use",
-                    choices = comp_timing.hand_fft_valid_methods,
-                    default = comp_timing.hand_fft_valid_methods[0])
+                    choices = comp_timing.custom_valid_methods,
+                    default = comp_timing.custom_valid_methods[0])
 parser.add_argument('--profile-outfile',
                     help = "File to which to write PStats output",
                     default=None)
@@ -57,12 +57,12 @@ fft.verify_fft_options(opt,parser)
 # Do what we can with command line options
 ctx = scheme.from_cli(opt)
 
+prob_class, size = comp_timing.parse_custom_problem(opt.problem, opt.method)
+
 if (opt.fft_backends[0] == 'fftw'):
     # We know we gave FFTW parameters on the command line
     if opt.fftw_input_float_wisdom_file is not None:
         fft.fftw.import_single_wisdom_from_filename(opt.fftw_input_float_wisdom_file)
-
-prob_class, size = comp_timing.parse_hand_fft_problem(opt.problem, opt.method)
 
 with ctx:
     fft.from_cli(opt)
@@ -91,25 +91,23 @@ with ctx:
 
 timings_array = array(timings_array)
 timings_array = timings_array/float(nexecute)
-hand_fft_mean = mean(timings_array)
-hand_fft_min = min(timings_array)
-hand_fft_max = max(timings_array)
-hand_fft_std = std(timings_array)
+custom_mean = mean(timings_array)
+custom_min = min(timings_array)
+custom_max = max(timings_array)
+custom_std = std(timings_array)
 # The following should be *per core*
-throughput = size/(hand_fft_mean*ncores)
+throughput = size/(custom_mean*ncores)
 
 if opt.long_output:
-    mean_str, min_str, max_str, std_str = multibench.format_time_strings([hand_fft_mean, hand_fft_min, hand_fft_max, hand_fft_std])
+    mean_str, min_str, max_str, std_str = multibench.format_time_strings([custom_mean, custom_min, custom_max, custom_std])
     print("Problem: {0}, setup: {1:g} s, mean time: {2},"
           " throughput/core: {3:g}".format(
             opt.problem, setup_time, mean_str, throughput))
     print("    min time: {0}, max time: {1}, std. dev: {2}\n".format(min_str, max_str, std_str))
 else:
     print("{0} {1} {2:g} {3} {4} {5} {6} {7:g}".format(opt.problem, opt.method, setup_time, 
-                                                       hand_fft_min, hand_fft_mean, 
-                                                       hand_fft_max, hand_fft_std, throughput))
-
-
+                                                       custom_min, custom_mean, 
+                                                       custom_max, custom_std, throughput))
 
 if (opt.fft_backends[0] == 'fftw'):
     # We know we gave FFTW parameters on the command line

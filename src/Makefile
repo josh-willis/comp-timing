@@ -1,5 +1,6 @@
 CC = gcc
 RM = rm
+CCLIBDIRS = /home/jwillis/root/gcc/lib64
 
 libthresh: thresh.c
 	$(CC) -o thresh.o -c -fPIC -fopenmp -march=native -O3 -funroll-loops thresh.c
@@ -20,6 +21,10 @@ libscorr: simd_corr.c
 libacorr: acorr.c
 	$(CC) -o acorr.o -c -fPIC -march=native -O2 -Wall acorr.c
 	$(CC) -o libacorr.so -shared acorr.o
+
+libtrans: trans.c
+	$(CC) -o trans.o -c -fPIC -fopenmp -march=native -O3 -funroll-loops -ffast-math -Wall trans.c
+	$(CC) -o libtrans.so -shared -fopenmp trans.o -lgomp -Wl,-rpath=$(CCLIBDIRS)
 
 clean:
 	$(RM) -f *.o *.so *~ *.i *.s

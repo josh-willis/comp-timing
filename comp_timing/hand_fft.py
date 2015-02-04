@@ -25,6 +25,7 @@ import numpy as _np
 import ctypes
 from pycbc import libutils
 from math import sqrt
+import sys
 
 # Several of the OpenMP based approaches use this
 #max_chunk = 4096
@@ -120,15 +121,45 @@ def plan_batched(nsize, nbatch=1, padding=0, inplace=False, nthreads=1):
     return res
 
 hand_fft_support = """
-#include <complex.h>
+#include <complex>
 #include <fftw3.h>
 #include <omp.h>
+
+static inline void ccmul(float * __restrict a, float * __restrict b, float * __restrict c, int N){
+
+int i;
+float xr, yr, xi, yi, re, im;
+
+for (i=0; i<N; i += 2){
+    xr = a[i];
+    xi = a[i+1];
+    yr = b[i];
+    yi = b[i+1];
+
+    re = xr*yr + xi*yi;
+    im = xr*yi - xi*yr;
+
+    c[i] = re;
+    c[i+1] = im;
+}
+
+}
+
+
 """
 
 hand_fft_libs = ['fftw3f', 'fftw3f_omp', 'gomp', 'm']
 # The following could return system libraries, but oh well,
 # shouldn't hurt anything
 hand_fft_libdirs = libutils.pkg_config_libdirs(['fftw3f'])
+rpath_list = []
+for libdir in hand_fft_libdirs:
+    rpath = "-Wl,-rpath="+libdir
+    rpath_list.append(rpath)
+hand_fft_link_args = ' '.join(rpath_list)
+#print hand_fft_link_args
+#print hand_fft_libdirs
+#sys.stdout.flush()
 
 # The code to do an FFT by hand.  Called using weave. Requires:
 #     NJOBS1, NJOBS2, NCHUNK1, and NCHUNK2 to be substituted
@@ -141,27 +172,86 @@ hand_fft_code = """
 int j;
 
 // First, execute half the FFTs for first phase
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(guided, 1)
 for (j = 0; j < NJOBS1; j++){
    int tid = omp_get_thread_num();
-   fftwf_execute_dft(plan1[tid], &vin[j*NCHUNK1], &vscratch[j*NCHUNK1]);
+   fftwf_execute_dft((fftwf_plan) plan1[tid], (fftwf_complex *) &vin[j*NCHUNK1],
+                     (fftwf_complex *) &vscratch[j*NCHUNK1]);
 }
 
 // Next, transpose (really need a twiddle before but we're just
 // ballparking)
 
-fftwf_execute_dft(tplan1[0], vscratch, vout);
+fftwf_execute_dft((fftwf_plan) tplan1[0], (fftwf_complex *) vscratch, (fftwf_complex *) vout);
 
 // Again, parallel
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static, 1)
 for (j = 0; j < NJOBS2; j++){
    int tid = omp_get_thread_num();
-   fftwf_execute_dft(plan2[tid], &vout[j*NCHUNK2], &vscratch[j*NCHUNK2]);
+   fftwf_execute_dft((fftwf_plan) plan2[tid], (fftwf_complex *) &vout[j*NCHUNK2],
+                     (fftwf_complex *) &vscratch[j*NCHUNK2]);
 }
 
 // Finally, transpose again
 
-fftwf_execute_dft(tplan2[0], vscratch, vout);
+fftwf_execute_dft((fftwf_plan) tplan2[0], (fftwf_complex *) vscratch, (fftwf_complex *) vout);
+
+"""
+
+hand_fft_mul_code = """
+int j;
+
+// First, execute half the FFTs for first phase
+#pragma omp parallel for schedule(guided, 1)
+for (j = 0; j < NJOBS1; j++){
+   int tid = omp_get_thread_num();
+   ccmul((float *) &aa[j*2*NCHUNK1], (float *) &bb[j*2*NCHUNK1],
+         (float *) &vin[j*2*NCHUNK1], 2*NCHUNK1);
+   fftwf_execute_dft((fftwf_plan) plan1[tid], (fftwf_complex *) &vin[j*NCHUNK1],
+                     (fftwf_complex *) &vscratch[j*NCHUNK1]);
+}
+
+// Next, transpose (really need a twiddle before but we're just
+// ballparking)
+
+fftwf_execute_dft((fftwf_plan) tplan1[0], (fftwf_complex *) vscratch, (fftwf_complex *) vout);
+
+// Again, parallel
+#pragma omp parallel for schedule(static, 1)
+for (j = 0; j < NJOBS2; j++){
+   int tid = omp_get_thread_num();
+   fftwf_execute_dft((fftwf_plan) plan2[tid], (fftwf_complex *) &vout[j*NCHUNK2],
+                     (fftwf_complex *) &vscratch[j*NCHUNK2]);
+}
+
+// Finally, transpose again
+
+fftwf_execute_dft((fftwf_plan) tplan2[0], (fftwf_complex *) vscratch, (fftwf_complex *) vout);
+
+"""
+
+phase1_code = """
+int j;
+
+// First, execute half the FFTs for first phase
+#pragma omp parallel for schedule(guided, 1)
+for (j = 0; j < NJOBS1; j++){
+   int tid = omp_get_thread_num();
+   fftwf_execute_dft((fftwf_plan) plan1[tid], (fftwf_complex *) &vin[j*NCHUNK1],
+                     (fftwf_complex *) &vscratch[j*NCHUNK1]);
+}
+
+"""
+
+phase2_code = """
+int j;
+
+#pragma omp parallel for schedule(static, 1)
+for (j = 0; j < NJOBS2; j++){
+   int tid = omp_get_thread_num();
+   fftwf_execute_dft((fftwf_plan) plan2[tid], (fftwf_complex *) &vout[j*NCHUNK2],
+                     (fftwf_complex *) &vscratch[j*NCHUNK2]);
+}
 
 """
 
@@ -176,7 +266,6 @@ class BaseHandFFTProblem(_mb.MultiBenchProblem):
         # We'll do some arithmetic with these, so sanity check first:
         if not check_pow_two(size):
             raise ValueError("Only power-of-two sizes supported")
-        if not 
 
         self.ncpus = _scheme.mgr.state.num_threads
         self.size = size
@@ -198,24 +287,19 @@ class BaseHandFFTProblem(_mb.MultiBenchProblem):
         # For our transpositions
         self.tmpvec = zeros(self.vsize, dtype = complex64)
         # Pointers are probably 64 bits; leave enough space just in case
-        self.firstplans = _np.zeros(self.ncpus, dtype = _np.uint64)
-        self.secondplans = _np.zeros(self.ncpus, dtype = _np.uint64)
-        self.tplan1 = _np.zeros(1, dtype = _np.uint64)
-        self.tplan2 = _np.zeros(1, dtype = _np.uint64)
+        self.firstplans = _np.zeros(self.ncpus, dtype = _np.uintp)
+        self.secondplans = _np.zeros(self.ncpus, dtype = _np.uintp)
+        self.tplan1 = _np.zeros(1, dtype = _np.uintp)
+        self.tplan2 = _np.zeros(1, dtype = _np.uintp)
         self.nbatch1 = max_chunk/self.nfirst
         self.nbatch2 = max_chunk/self.nsecond
-        tmpcode = hand_fft_code.replace('NJOBS1', str(self.size/max_chunk))
-        tmpcode = tmpcode.replace('NJOBS2', str(self.size/max_chunk))
-        tmpcode = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
-        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
-        del tmpcode
 
     def _setup(self):
         # Our transposes are executed using all available threads, and always out-of-place
         self.tplan1[0] = plan_transpose(self.nsecond + self.padding, self.nfirst + self.padding,
-                                        inplace = False, _scheme.mgr.state.num_threads)
+                                        inplace = False, nthreads = _scheme.mgr.state.num_threads)
         self.tplan2[0] = plan_transpose(self.nsecond + self.padding, self.nfirst + self.padding,
-                                        inplace = False, _scheme.mgr.state.num_threads)
+                                        inplace = False, nthreads = _scheme.mgr.state.num_threads)
         # Our batched FFTs are executed using a single thread, since they will be called
         # from inside an OpenMP parallel region. We make a plan for each cpu, so that
         # there is not contention to read the plans (and they can stay in cache).
@@ -224,22 +308,101 @@ class BaseHandFFTProblem(_mb.MultiBenchProblem):
                                               inplace = False, nthreads = 1)
             self.secondplans[i] = plan_batched(self.nsecond, self.nbatch2, self.padding, 
                                                inplace = False, nthreads = 1)
+        self.execute()
+
+
+# Now our derived classes
+
+class HandFFTProblem(BaseHandFFTProblem):
+    def __init__(self, size, inplace = False, padding = True):
+        super(HandFFTProblem, self).__init__(size, inplace = inplace, padding = padding)
+        tmpcode = hand_fft_code.replace('NJOBS1', str( self.size/(2*max_chunk) ) )
+        tmpcode = tmpcode.replace('NJOBS2', str( self.size/max_chunk ) )
+        tmpcode = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
+        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
+        del tmpcode
 
     def execute(self):
         vin = _np.array(self.invec.data, copy = False)
         vout = _np.array(self.outvec.data, copy = False)
         vscratch = _np.array(self.tmpvec.data, copy = False)
-        plan1 = _np.array(self.firstplans.data, copy = False)
-        plan2 = _np.array(self.secondplans.data, copy = False)
+        plan1 = _np.array(self.firstplans, copy = False)
+        plan2 = _np.array(self.secondplans, copy = False)
         tplan1 = _np.array(self.tplan1, copy = False)
         tplan2 = _np.array(self.tplan2, copy = False)
         inline(self.code, ['vin', 'vout', 'vscratch', 'plan1', 'plan2', 'tplan1', 'tplan2'],
-               extra_compile_args=['-fopenmp'], libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
-               support_code = hand_fft_support)
+               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+               libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
+               support_code = hand_fft_support, extra_link_args = [hand_fft_link_args],
+               verbose = 2, auto_downcast = 1)
 
-# Now our derived classes
+class HandFFTMulProblem(BaseHandFFTProblem):
+    def __init__(self, size, inplace = False, padding = True):
+        super(HandFFTMulProblem, self).__init__(size, inplace = inplace, padding = padding)
+        self.stilde = zeros(self.vsize, dtype = complex64)
+        self.htilde = zeros(self.vsize, dtype = complex64)
+        tmpcode = hand_fft_mul_code.replace('NJOBS1', str( self.size/(2*max_chunk) ) )
+        tmpcode = tmpcode.replace('NJOBS2', str( self.size/max_chunk ) )
+        tmpcode = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
+        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
+        del tmpcode
 
-_class_dict = { 'hand_fft' : BaseHandFFTProblem
+    def execute(self):
+        aa = _np.array(self.stilde.data, copy = False)
+        bb = _np.array(self.htilde.data, copy = False)
+        vin = _np.array(self.invec.data, copy = False)
+        vout = _np.array(self.outvec.data, copy = False)
+        vscratch = _np.array(self.tmpvec.data, copy = False)
+        plan1 = _np.array(self.firstplans, copy = False)
+        plan2 = _np.array(self.secondplans, copy = False)
+        tplan1 = _np.array(self.tplan1, copy = False)
+        tplan2 = _np.array(self.tplan2, copy = False)
+        inline(self.code, ['aa', 'bb', 'vin', 'vout', 'vscratch', 'plan1', 'plan2', 'tplan1', 'tplan2'],
+               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+               libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
+               support_code = hand_fft_support, extra_link_args = [hand_fft_link_args],
+               verbose = 2, auto_downcast = 1)
+
+class PhaseOneProblem(BaseHandFFTProblem):
+    def __init__(self, size, inplace = False, padding = True):
+        super(PhaseOneProblem, self).__init__(size, inplace = inplace, padding = padding)
+        tmpcode = phase1_code.replace('NJOBS1', str( self.size/(2*max_chunk) ) )
+        self.code = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
+        del tmpcode
+
+    def execute(self):
+        vin = _np.array(self.invec.data, copy = False)
+        vscratch = _np.array(self.tmpvec.data, copy = False)
+        plan1 = _np.array(self.firstplans, copy = False)
+        inline(self.code, ['vin', 'vscratch', 'plan1'],
+               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+               libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
+               support_code = hand_fft_support, extra_link_args = [hand_fft_link_args],
+               verbose = 2, auto_downcast = 1)
+
+class PhaseTwoProblem(BaseHandFFTProblem):
+    def __init__(self, size, inplace = False, padding = True):
+        super(PhaseTwoProblem, self).__init__(size, inplace = inplace, padding = padding)
+        tmpcode = phase2_code.replace('NJOBS2', str( self.size/max_chunk ) )
+        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
+        del tmpcode
+
+    def execute(self):
+        vout = _np.array(self.outvec.data, copy = False)
+        vscratch = _np.array(self.tmpvec.data, copy = False)
+        plan2 = _np.array(self.secondplans, copy = False)
+        inline(self.code, ['vout', 'vscratch', 'plan2'],
+               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+               libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
+               support_code = hand_fft_support, extra_link_args = [hand_fft_link_args],
+               verbose = 2, auto_downcast = 1)
+
+
+
+_class_dict = { 'hand_fft' : HandFFTProblem,
+                'hand_fft_mul' : HandFFTMulProblem,
+                'phase_one' : PhaseOneProblem,
+                'phase_two' : PhaseTwoProblem
                }
 
 hand_fft_valid_methods = _class_dict.keys()

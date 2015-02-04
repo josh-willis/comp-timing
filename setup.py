@@ -72,6 +72,12 @@ setup (
         'bin/pycbc_trans_make_wisdom',
         'bin/pycbc_trans_timing',
         'bin/pycbc_trans_dummy',
-        'bin/pycbc_hand_fft_timing'
+        'bin/pycbc_hand_fft_timing',
+        'bin/pycbc_mkl_trans_timing',
+        'bin/pycbc_openblas_trans_timing',
+        'bin/pycbc_colfax_trans_timing',
+        'bin/pycbc_mkl_hand_timing',
+        'bin/pycbc_fftw_hand_timing',
+        'bin/pycbc_custom_timing'
         ]
     )

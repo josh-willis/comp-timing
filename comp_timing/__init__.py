@@ -1,4 +1,10 @@
 from corr import parse_corr_problem, corr_valid_methods
 from thresh import parse_thresh_problem, thresh_valid_methods
 from trans import parse_trans_problem, trans_valid_methods
-from hand_fft import parse_hand_fft_problem, hand_fft_valid_methods
+from mkl_trans import parse_mkl_trans_problem, mkl_trans_valid_methods
+#from openblas_trans import parse_openblas_trans_problem, openblas_trans_valid_methods
+#from colfax_trans import parse_colfax_trans_problem, colfax_trans_valid_methods
+#from hand_fft import parse_hand_fft_problem, hand_fft_valid_methods
+from mkl_hand import parse_mkl_hand_problem, mkl_hand_valid_methods
+from fftw_hand import parse_fftw_hand_problem, fftw_hand_valid_methods
+from custom import parse_custom_problem, custom_valid_methods
