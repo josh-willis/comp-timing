@@ -82,142 +82,6 @@ class NewPyCBCCorrProblem(BaseCorrProblem):
         # To setup, we just run once, which compiles and caches the code
         self.execute()
 
-# From openblas/cblas.h:
-
-CblasRowMajor = 101 
-CblasColMajor = 102
-CblasNoTrans = 111
-CblasTrans = 112
-CblasConjTrans = 113
-CblasConjNoTrans = 114
-
-_libopenblas = libutils.get_ctypes_library('openblas', [])
-if _libopenblas is None:
-    HAVE_OPENBLAS = False
-else:
-    HAVE_OPENBLAS = True
-
-class OpenblasCorrProblem(BaseCorrProblem):
-    def __init__(self, size, dtype):
-        super(OpenblasCorrProblem, self).__init__(size=size, dtype=dtype)
-        if not HAVE_OPENBLAS:
-            raise RuntimeError("Could not find libopenblas.so")
-        # [C,Z]GBMV calculate the complex product of a banded matrix
-        # with a vector.  In BLAS notation they compute:
-        #      y <- alpha * A * x + beta * y
-        # but in terms of our variables we compute:
-        #      z <- 1.0 * conj(diag(x)) * y + 0.0 * z
-        # since we need to preserve the inputs x and y, and the calling
-        # sequence requires that we specify alpha and beta.  Note that
-        # OpenBLAS specifies complex types as two-element arrays addressed
-        # by reference.  To ensure the correct type of those constants,
-        # we create appropriate length numpy arrays filled in with the
-        # needed constants.
-
-        if hasattr(_scheme.mgr.state, 'num_threads'):
-            self.ncpus = _scheme.mgr.state.num_threads
-        else:
-            self.ncpus = 1
-
-        _libopenblas.openblas_set_num_threads(self.ncpus)
-
-        if dtype == complex64:
-            self._efunc = _libopenblas.cblas_cgbmv
-            self.alphavec = zeros(1, dtype = complex64)
-            self.betavec = zeros(1, dtype = complex64)
-        else:
-            self._efunc = _libopenblas.cblas_zgbmv
-            self.alphavec = zeros(1, dtype = complex128)
-            self.betavec = zeros(1, dtype = complex128)
-
-        self.alphavec[0] = 1.0 + 0.0j
-        self.alpha = self.alphavec.ptr
-        self.beta = self.betavec.ptr
-        self.N = len(self.x)
-
-        self._efunc.argtypes = [ctypes.c_int, ctypes.c_int, # ORDER, TRANSPOSE
-                                ctypes.c_int, ctypes.c_int, # M, N
-                                ctypes.c_int, ctypes.c_int, # KLOWER, KUPPER
-                                ctypes.c_void_p, ctypes.c_void_p, # &ALPHA, &A = diag(x)
-                                ctypes.c_int, ctypes.c_void_p, # LDA, &y
-                                ctypes.c_int, ctypes.c_void_p, # incy, &beta
-                                ctypes.c_void_p, ctypes.c_int] # &z, incz
-
-        self.xptr = self.x.ptr
-        self.yptr = self.y.ptr
-        self.zptr = self.z.ptr
-
-    def execute(self):
-        self._efunc(CblasRowMajor, CblasConjNoTrans,
-                    self.N, self.N, 0, 0,
-                    self.alpha, self.xptr, 1, self.yptr, 1,
-                    self.beta, self.zptr, 1)
-
-    def _setup(self):
-        pass
-
-_libmkl = libutils.get_ctypes_library('mkl_rt', [])
-if _libmkl is None:
-    HAVE_MKL = False
-else:
-    HAVE_MKL = True
-
-class MKLblasCorrProblem(BaseCorrProblem):
-    def __init__(self, size, dtype):
-        super(MKLblasCorrProblem, self).__init__(size=size, dtype=dtype)
-        if not HAVE_MKL:
-            raise RuntimeError("Could not find libmkl_rt.so")
-        # [C,Z]GBMV calculate the complex product of a banded matrix
-        # with a vector.  In BLAS notation they compute:
-        #      y <- alpha * A * x + beta * y
-        # but in terms of our variables we compute:
-        #      z <- 1.0 * conj(diag(x)) * y + 0.0 * z
-        # since we need to preserve the inputs x and y, and the calling
-        # sequence requires that we specify alpha and beta.  Note that MKL
-        # passes complex constants by reference.  To ensure the correct 
-        # type of those constants, we create appropriate length numpy 
-        # arrays filled in with the needed constants. Also note that MKL
-        # does *NOT* support CblasConjNoTrans, so we use CblasConjTrans instead.
-
-        if hasattr(_scheme.mgr.state, 'num_threads'):
-            self.ncpus = _scheme.mgr.state.num_threads
-        else:
-            self.ncpus = 1
-
-        if dtype == complex64:
-            self._efunc = _libmkl.cblas_cgbmv
-            self.alphavec = zeros(1, dtype = complex64)
-            self.betavec = zeros(1, dtype = complex64)
-        else:
-            self._efunc = _libmkl.cblas_zgbmv
-            self.alphavec = zeros(1, dtype = complex128)
-            self.betavec = zeros(1, dtype = complex128)
-
-        self.alphavec[0] = 1.0 + 0.0j
-        self.alpha = self.alphavec.ptr
-        self.beta = self.betavec.ptr
-        self.N = len(self.x)
-
-        self._efunc.argtypes = [ctypes.c_int, ctypes.c_int, # ORDER, TRANSPOSE
-                                ctypes.c_int, ctypes.c_int, # M, N
-                                ctypes.c_int, ctypes.c_int, # KLOWER, KUPPER
-                                ctypes.c_void_p, ctypes.c_void_p, # &ALPHA, &A = diag(x)
-                                ctypes.c_int, ctypes.c_void_p, # LDA, &y
-                                ctypes.c_int, ctypes.c_void_p, # incy, &beta
-                                ctypes.c_void_p, ctypes.c_int] # &z, incz
-
-        self.xptr = self.x.ptr
-        self.yptr = self.y.ptr
-        self.zptr = self.z.ptr
-
-    def execute(self):
-        self._efunc(CblasRowMajor, CblasConjTrans,
-                    self.N, self.N, 0, 0,
-                    self.alpha, self.xptr, 1, self.yptr, 1,
-                    self.beta, self.zptr, 1)
-
-    def _setup(self):
-        pass
 
 simd_omp_code_float = """
 int j;
@@ -229,76 +93,6 @@ for (j = 0; j < NUM_THREADS; j++){
 
 """
 
-avx_support_save2 = """
-#include <stdlib.h>
-#include <math.h>
-#include <x86intrin.h>
-
-#ifdef __AVX__
-#define _HAVE_AVX 1
-#else
-#define _HAVE_AVX 0
-#endif
-
-//#define ROUND_DOWN(x, s) ((x) & ~((s)-1))
-
-static inline void ccmul(float * __restrict a, float * __restrict b, float * __restrict c, int N){
-
-int i;
-
-#if _HAVE_AVX
-
-
-// Unroll three times. Assume that one vector already conjugated.
-
-for (i = 0; i < N-24; i += 24){
-  __m256 a_re, a_im, b_flip;
-  __m256 a1, b1, aib1, arb1;
-  __m256 a2, b2, aib2, arb2;
-  __m256 a3, b3, aib3, arb3;
- 
-  // Load everything into registers
-
-  a1 = _mm256_load_ps(a+i);
-  a2 = _mm256_load_ps(a+i+8);
-  a3 = _mm256_load_ps(a+i+16);
-  b1 = _mm256_load_ps(b+i);
-  b2 = _mm256_load_ps(b+i+8);
-  b3 = _mm256_load_ps(b+i+16);
-
-  a_re = _mm256_shuffle_ps(a1, a1, 0xA0A0);
-  arb1 = _mm256_mul_ps(a_re, b1);
-  a_im = _mm256_shuffle_ps(a1, a1, 0xF5F5);
-  b_flip = _mm256_shuffle_ps(b1, b1, 0xB1B1);
-  aib1 = _mm256_mul_ps(a_im, b_flip);
-
-  a_re = _mm256_shuffle_ps(a2, a2, 0xA0A0);
-  arb2 = _mm256_mul_ps(a_re, b2);
-  a_im = _mm256_shuffle_ps(a2, a2, 0xF5F5);
-  b_flip = _mm256_shuffle_ps(b2, b2, 0xB1B1);
-  aib2 = _mm256_mul_ps(a_im, b_flip);
-
-  // Finish up first, reusing a1 register:
-  a1 = _mm256_addsub_ps(arb1, aib1);
-
-  a_re = _mm256_shuffle_ps(a3, a3, 0xA0A0);
-  arb3 = _mm256_mul_ps(a_re, b3);
-  a_im = _mm256_shuffle_ps(a3, a3, 0xF5F5);
-  b_flip = _mm256_shuffle_ps(b3, b3, 0xB1B1);
-  aib3 = _mm256_mul_ps(a_im, b_flip);
-
-  a2 = _mm256_addsub_ps(arb2, aib2);
-  a3 = _mm256_addsub_ps(arb3, aib3);
-
-  _mm256_store_ps(c+i, a1);
-  _mm256_store_ps(c+i+8, a2);
-  _mm256_store_ps(c+i+16, a3);
-}
-
-#endif
-
-}
-"""
 
 avx_support = """
 #include <stdlib.h>
@@ -317,111 +111,71 @@ static inline void ccmul(float * __restrict a, float * __restrict b, float * __r
 int i;
 
 #if _HAVE_AVX
-  __m256 a_re, a_im, b_flip, zeros;
-  __m256 a1, b1, aib1, arb1;
+  __m256 ymm0, ymm1, ymm2, ymm3, ymm4, ymm5;
+  __m256 ymm6, ymm7, ymm8, ymm9, ymm10, ymm11;
+  float *aptr, *bptr, *cptr;
 
-  zeros = _mm256_setzero_ps();
+  aptr = a;
+  bptr = b;
+  cptr = c;
 
-  for (i = 0; i < N; i += 8){
- 
-    // Load everything into registers
+  for (i = 0; i < N; i += 32){
+      // Load everything into registers
 
-    a1 = _mm256_load_ps(a+i);
-    b1 = _mm256_load_ps(b+i);
+      //ymm0 = _mm256_load_ps(aptr);
+      //ymm3 = _mm256_load_ps(aptr+8);
+      //ymm6 = _mm256_load_ps(aptr+16);
+      //ymm9 = _mm256_load_ps(aptr+24);
+      _mm256_stream_si256((__m256i *) aptr, _mm256_castps_si256(ymm0));
+      _mm256_stream_si256((__m256i *) (aptr+8), _mm256_castps_si256(ymm3));
+      _mm256_stream_si256((__m256i *) (aptr+16), _mm256_castps_si256(ymm6));
+      _mm256_stream_si256((__m256i *) (aptr+24), _mm256_castps_si256(ymm9));
+      //ymm1 = _mm256_load_ps(bptr);
+      //ymm4 = _mm256_load_ps(bptr+8);
+      //ymm7 = _mm256_load_ps(bptr+16);
+      //ymm10 = _mm256_load_ps(bptr+24);
+      _mm256_stream_si256((__m256i *) bptr, _mm256_castps_si256(ymm1));
+      _mm256_stream_si256((__m256i *) (bptr+8), _mm256_castps_si256(ymm4));
+      _mm256_stream_si256((__m256i *) (bptr+16), _mm256_castps_si256(ymm7));
+      _mm256_stream_si256((__m256i *) (bptr+24), _mm256_castps_si256(ymm10));
 
-    a_re = _mm256_shuffle_ps(a1, a1, 0xA0A0);
-    arb1 = _mm256_mul_ps(a_re, b1);
-    a_im = _mm256_shuffle_ps(a1, a1, 0xF5F5);
-    a_im = _mm256_sub_ps(zeros, a_im);
-    b_flip = _mm256_shuffle_ps(b1, b1, 0xB1B1);
-    aib1 = _mm256_mul_ps(a_im, b_flip);
-    a1 = _mm256_addsub_ps(arb1, aib1);
+      ymm2 = _mm256_movehdup_ps(ymm1);
+      ymm1 = _mm256_moveldup_ps(ymm1);
+      ymm1 = _mm256_mul_ps(ymm1, ymm0);
+      ymm0 = _mm256_shuffle_ps(ymm0, ymm0, 0xB1);
+      ymm2 = _mm256_mul_ps(ymm2, ymm0);
+      ymm0 = _mm256_addsub_ps(ymm1, ymm2);
 
-    _mm256_store_ps(c+i, a1);
-  }
+      ymm5 = _mm256_movehdup_ps(ymm4);
+      ymm4 = _mm256_moveldup_ps(ymm4);
+      ymm4 = _mm256_mul_ps(ymm4, ymm3);
+      ymm3 = _mm256_shuffle_ps(ymm3, ymm3, 0xB1);
+      ymm5 = _mm256_mul_ps(ymm5, ymm3);
+      ymm3 = _mm256_addsub_ps(ymm4, ymm5);
 
-#endif
+      ymm8 = _mm256_movehdup_ps(ymm7);
+      ymm7 = _mm256_moveldup_ps(ymm7);
+      ymm7 = _mm256_mul_ps(ymm7, ymm6);
+      ymm6 = _mm256_shuffle_ps(ymm6, ymm6, 0xB1);
+      ymm8 = _mm256_mul_ps(ymm8, ymm6);
+      ymm6 = _mm256_addsub_ps(ymm7, ymm8);
 
-}
-"""
+      ymm11 = _mm256_movehdup_ps(ymm10);
+      ymm10 = _mm256_moveldup_ps(ymm10);
+      ymm10 = _mm256_mul_ps(ymm10, ymm9);
+      ymm9 = _mm256_shuffle_ps(ymm9, ymm9, 0xB1);
+      ymm11 = _mm256_mul_ps(ymm11, ymm9);
+      ymm9 = _mm256_addsub_ps(ymm10, ymm11);
 
+      _mm256_store_ps(cptr, ymm0);
+      _mm256_store_ps(cptr+8, ymm3);
+      _mm256_store_ps(cptr+16, ymm6);
+      _mm256_store_ps(cptr+24, ymm9);
 
-# In case we wanted to go back to this, but the different variations
-# on AVX seem to make little difference, e.g. manual loop unrolling
-# and reordering to hide instruction latency
-
-avx_support_save = """
-#include <stdlib.h>
-#include <math.h>
-#include <x86intrin.h>
-
-#ifdef __AVX__
-#define _HAVE_AVX 1
-#else
-#define _HAVE_AVX 0
-#endif
-
-#define ROUND_DOWN(x, s) ((x) & ~((s)-1))
-
-static inline void ccmul(float * __restrict a, float * __restrict b, float * __restrict c, int N){
-
-int i;
-
-#if _HAVE_AVX
-
-float minus_ones_vec[8] = { -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
-__m256 minus_ones;
-
-minus_ones = _mm256_loadu_ps(minus_ones_vec);
-
-// Unroll three times.  Interleave slightly differently to avoid need for
-// multiple "minus_ones" registers.
-
-for (i = 0; i < ROUND_DOWN(N, 24); i += 24){
-  __m256 x1, y1, z1, areg1, breg1;
-  __m256 x2, y2, z2, areg2, breg2;
-  __m256 x3, y3, z3, areg3, breg3;
-
-  // Load everything into registers
-
-  areg1 = _mm256_load_ps(a+i);
-  areg2 = _mm256_load_ps(a+i+8);
-  areg3 = _mm256_load_ps(a+i+16);
-  breg1 = _mm256_load_ps(b+i);
-  breg2 = _mm256_load_ps(b+i+8);
-  breg3 = _mm256_load_ps(b+i+16);
-
-  x1 = _mm256_shuffle_ps(areg1, areg1, 0xA0A0);
-  x2 = _mm256_shuffle_ps(areg2, areg2, 0xA0A0);
-  x3 = _mm256_shuffle_ps(areg3, areg3, 0xA0A0);
-
-  z1 = _mm256_mul_ps(x1, breg1);
-  z2 = _mm256_mul_ps(x2, breg2);
-  z3 = _mm256_mul_ps(x3, breg3);
-
-  x1 = _mm256_shuffle_ps(areg1, areg1, 0xF5F5);
-  x2 = _mm256_shuffle_ps(areg2, areg2, 0xF5F5);
-  x3 = _mm256_shuffle_ps(areg3, areg3, 0xF5F5);
-
-  x1 = _mm256_mul_ps(x1, minus_ones);
-  y1 = _mm256_shuffle_ps(breg1, breg1, 0xB1B1);
-  y1 = _mm256_mul_ps(x1, y1);
-  x1 = _mm256_addsub_ps(z1, y1);
-
-  x2 = _mm256_mul_ps(x2, minus_ones);
-  y2 = _mm256_shuffle_ps(breg2, breg2, 0xB1B1);
-  y2 = _mm256_mul_ps(x2, y2);
-  x2 = _mm256_addsub_ps(z2, y2);
-
-  x3 = _mm256_mul_ps(x3, minus_ones);
-  y3 = _mm256_shuffle_ps(breg3, breg3, 0xB1B1);
-  y3 = _mm256_mul_ps(x3, y3);
-  x3 = _mm256_addsub_ps(z3, y3);
-
-  _mm256_store_ps(c+i, x1);
-  _mm256_store_ps(c+i+8, x2);
-  _mm256_store_ps(c+i+16, x3);
-}
+      aptr += 32;
+      bptr += 32;
+      cptr += 32;
+    }
 
 #endif
 
@@ -522,217 +276,6 @@ class SIMDCorrProblem(BaseCorrProblem):
 #               extra_compile_args=['-msse3 -O3 -w'],
                support_code = avx_support,
                auto_downcast = 1)
-
-    def _setup(self):
-        # To setup, we just run once, which compiles and caches the code
-        self.execute()
-
-### ASOA
-
-simd_asoa_support = """
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <x86intrin.h>
-
-#ifdef __AVX__
-#define _HAVE_AVX 1
-#else
-#define _HAVE_AVX 0
-#endif
-
-//#define ROUND_DOWN(x, s) ((x) & ~((s)-1))
-
-static inline void ccmul(float * __restrict a, float * __restrict b, float * __restrict c, int N){
-
-int i;
-
-#if _HAVE_AVX
-
-/*
-
-We only have enough registers to unroll the loop twice.
-
-*/
-
-
-__m256 ar1, ai1, br1, bi1, arbr1, aibi1, arbi1, aibr1;
-__m256 ar2, ai2, br2, bi2, arbr2, aibi2, arbi2, aibr2;
-
-for (i = 0; i < N-32; i += 32){
-
-  // Load up all of the registers
-  ar1 = _mm256_load_ps(a+i); 
-  ai1 = _mm256_load_ps(a+i+8);
-  ar2 = _mm256_load_ps(a+i+16); 
-  ai2 = _mm256_load_ps(a+i+24);
-  br1 = _mm256_load_ps(b+i);
-  bi1 = _mm256_load_ps(b+i+8);
-  br2 = _mm256_load_ps(b+i+16);
-  bi2 = _mm256_load_ps(b+i+24);
-
-  arbr1 = _mm256_mul_ps(ar1, br1);
-  aibi1 = _mm256_mul_ps(ai1, ai1);
-  arbi1 = _mm256_mul_ps(ar1, ai1);
-  aibr1 = _mm256_mul_ps(ai1, ar1);
-
-  arbr2 = _mm256_mul_ps(ar2, br2);
-  aibi2 = _mm256_mul_ps(ai2, ai2);
-
-  // Re-use registers for output
-  ar1 = _mm256_add_ps(arbr1, aibi1);
-
-  // Return to computing second array element
-
-  arbi2 = _mm256_mul_ps(ar2, ai2);
-  aibr2 = _mm256_mul_ps(ai2, ar2);
-
-  // Compute second output for first
-  ai1 = _mm256_sub_ps(arbi1, aibr1);
-
-  // Now we can't hide instruction latency anymore
-  ar2 = _mm256_add_ps(arbr2, aibi2);
-  ai2 = _mm256_sub_ps(arbi2, aibr2);
-
-  // Store results
-
-  _mm256_store_ps(c+i, ar1);
-  _mm256_store_ps(c+i+8, ai1);
-  _mm256_store_ps(c+i+16, ar2);
-  _mm256_store_ps(c+i+24, ai2);
-
-  }
-}
-
-#else
-#error AVX not available
-#endif
-
-"""
-
-simd_asoa_code = """
-int j;
-
-#pragma omp parallel for schedule(static)
-for (j = 0; j < NUM_THREADS; j++){
-  ccmul(&aa[j*NBLOCK], &bb[j*NBLOCK], &cc[j*NBLOCK], NBLOCK);
-}
-"""
-
-simd_asoa_support_save = """
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <x86intrin.h>
-
-#ifdef __AVX__
-#define _HAVE_AVX 1
-#else
-#define _HAVE_AVX 0
-#endif
-
-//#define ROUND_DOWN(x, s) ((x) & ~((s)-1))
-
-static inline void ccmul(float * __restrict are, float * __restrict aim,
-                         float * __restrict bre, float * __restrict bim,
-                         float * __restrict cre, float * __restrict cim,
-                         int N){
-
-int i;
-
-#if _HAVE_AVX
-
-/*
-
-We only have enough registers to unroll the loop twice.
-
-*/
-
-
-__m256 ar1, ai1, br1, bi1, arbr1, aibi1, arbi1, aibr1;
-//__m256 ar2, ai2, br2, bi2, arbr2, aibi2, arbi2, aibr2;
-
-for (i = 0; i < N-8; i += 8){
-
-  // Load up all of the registers
-  ar1 = _mm256_load_ps(are+i); 
-  //ar2 = _mm256_load_ps(are+i+8); 
-  ai1 = _mm256_load_ps(aim+i);
-  //ai2 = _mm256_load_ps(aim+i+8);
-  br1 = _mm256_load_ps(bre+i);
-  //br2 = _mm256_load_ps(bre+i+8);
-  bi1 = _mm256_load_ps(bim+i);
-  //bi2 = _mm256_load_ps(bim+i+8);
-
-  arbr1 = _mm256_mul_ps(ar1, br1);
-  aibi1 = _mm256_mul_ps(ai1, ai1);
-  arbi1 = _mm256_mul_ps(ar1, ai1);
-  aibr1 = _mm256_mul_ps(ai1, ar1);
-
-  //arbr2 = _mm256_mul_ps(ar2, br2);
-  //aibi2 = _mm256_mul_ps(ai2, ai2);
-
-  // Re-use registers for output
-  ar1 = _mm256_add_ps(arbr1, aibi1);
-
-  // Return to computing second array element
-
-  //arbi2 = _mm256_mul_ps(ar2, ai2);
-  //aibr2 = _mm256_mul_ps(ai2, ar2);
-
-  // Compute second output for first
-  ai1 = _mm256_sub_ps(arbi1, aibr1);
-
-  // Now we can't hide instruction latency anymore
-  //ar2 = _mm256_add_ps(arbr2, aibi2);
-  //ai2 = _mm256_sub_ps(arbi2, aibr2);
-
-  // Store results
-
-  _mm256_store_ps(cre+i, ar1);
-  //_mm256_store_ps(cre+i+8, ar2);
-  _mm256_store_ps(cim+i, ai1);
-  //_mm256_store_ps(cim+i+8, ai2);
-
-  }
-}
-
-#else
-#error AVX not available
-#endif
-
-"""
-
-simd_asoa_code_save = """
-int j;
-
-#pragma omp parallel for schedule(static)
-for (j = 0; j < NUM_THREADS; j++){
-  ccmul(&aa_re[j*NBLOCK], &aa_im[j*NBLOCK],
-        &bb_re[j*NBLOCK], &bb_im[j*NBLOCK],
-        &cc_re[j*NBLOCK], &cc_im[j*NBLOCK],
-        NBLOCK);
-}
-"""
-
-class SIMD_ASOA_CorrProblem(BaseCorrProblem):
-    def __init__(self, size, dtype):
-        super(SIMD_ASOA_CorrProblem, self).__init__(size=size, dtype=dtype)
-        if dtype != complex64:
-            raise RuntimeError("SIMD only supports single-precision complex.")
-        n = size/max_chunk
-        tmpcode = simd_asoa_code.replace('NUM_THREADS', str(n))
-        self.thecode = tmpcode.replace('NBLOCK', str(max_chunk))
-
-    def execute(self):
-        aa = _np.array(self.x.data, copy=False).view(dtype = float32)
-        bb = _np.array(self.y.data, copy=False).view(dtype = float32)
-        cc = _np.array(self.z.data, copy=False).view(dtype = float32)
-        inline(self.thecode, ['aa', 'bb', 'cc'],
-               extra_compile_args=['-march=native -fprefetch-loop-arrays -O3 -w'] + omp_flags,
-               support_code = simd_asoa_support,
-               auto_downcast = 1,
-               libraries = omp_libs)
 
     def _setup(self):
         # To setup, we just run once, which compiles and caches the code
@@ -840,15 +383,13 @@ class Static_OMP_CorrProblem(BaseCorrProblem):
         self.execute()
 
 
+
+
 _dtype_dict = { 's' : complex64,
                 'd' : complex128 }
 
 _class_dict = { 'numpy' : NumpyCorrProblem,
                 'weave' : WeaveCorrProblem,
-                'openblas' : OpenblasCorrProblem,
-                'mkl' : MKLblasCorrProblem,
-                'simd' : SIMDCorrProblem,
-                'simd_asoa' : SIMD_ASOA_CorrProblem,
                 'avx_omp' : AVX_OMP_CorrProblem,
                 'sse3_omp' : SSE3_OMP_CorrProblem,
                 'static_omp' : Static_OMP_CorrProblem,

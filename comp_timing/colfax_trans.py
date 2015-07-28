@@ -33,6 +33,7 @@ def plan_transpose(size):
     f.argtypes = [ctypes.c_int, POINTER(POINTER(ctypes.c_int)), ctypes.c_int]
     plan = POINTER(ctypes.c_int)()
     f(0, byref(plan), size)
+    print plan.contents.value
     return plan
 
 class BaseTransProblem(_mb.MultiBenchProblem):

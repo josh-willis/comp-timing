@@ -23,19 +23,22 @@ from pycbc import scheme as _scheme
 from scipy.weave import inline
 import numpy as _np
 import ctypes
+from ctypes import POINTER, byref
 from pycbc import libutils
 from math import sqrt
 import sys
 
 # Several of the OpenMP based approaches use this
-max_chunk = 8192
+#max_chunk1 = 8192
+max_chunk1 = 16384
+#max_chunk2 = 16384
+max_chunk2 = 32768
+#max_chunk1 = 1024
+#max_chunk2 = 1024
 
 libfftw3f = _fftw.float_lib
 
-fexecute = libfftw3f.fftwf_execute_dft
-fexecute.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-
-_libtranspose = get_ctypes_library('transpose', [])
+_libtranspose = libutils.get_ctypes_library('transpose', [])
 if _libtranspose is None:
     raise ImportError
 
@@ -94,6 +97,151 @@ hand_fft_support = """
 #include <complex>
 #include <fftw3.h>
 #include <omp.h>
+#include <stdio.h>
+#include <x86intrin.h>
+
+#ifdef __AVX__
+#define _HAVE_AVX 1
+#else
+#define _HAVE_AVX 0
+#endif
+
+/*
+static inline void ccmul(std::complex<float> * __restrict a,
+                         std::complex<float> * __restrict b,
+                         std::complex<float> * __restrict c){
+*/
+
+
+static inline void ccmul(float * __restrict a,
+                         float * __restrict b,
+                         float * __restrict c){
+
+
+int i, j;
+
+
+#if _HAVE_AVX
+  __m256 ymm0, ymm1, ymm2, ymm3, ymm4, ymm5;
+  __m256 ymm6, ymm7, ymm8, ymm9, ymm10, ymm11;
+  float *aptr, *bptr, *cptr;
+
+  for (j = 0; j<NBATCH; j++) {
+    aptr = &a[j*2*NSIZE];
+    bptr = &b[j*2*NSIZE];
+    cptr = &c[j*NSTRIDE];
+    // Again, everything is indexed as a float array
+    for (i = 0; i < NSIZE; i += 32){
+ 
+      // Load everything into registers
+
+      //ymm0 = _mm256_load_ps(aptr);
+      //ymm3 = _mm256_load_ps(aptr+8);
+      //ymm6 = _mm256_load_ps(aptr+16);
+      //ymm9 = _mm256_load_ps(aptr+24);
+      _mm256_stream_si256((__m256i *) aptr, _mm256_castps_si256(ymm0));
+      _mm256_stream_si256((__m256i *) (aptr+8), _mm256_castps_si256(ymm3));
+      _mm256_stream_si256((__m256i *) (aptr+16), _mm256_castps_si256(ymm6));
+      _mm256_stream_si256((__m256i *) (aptr+24), _mm256_castps_si256(ymm9));
+      //ymm1 = _mm256_load_ps(bptr);
+      //ymm4 = _mm256_load_ps(bptr+8);
+      //ymm7 = _mm256_load_ps(bptr+16);
+      //ymm10 = _mm256_load_ps(bptr+24);
+      _mm256_stream_si256((__m256i *) bptr, _mm256_castps_si256(ymm1));
+      _mm256_stream_si256((__m256i *) (bptr+8), _mm256_castps_si256(ymm4));
+      _mm256_stream_si256((__m256i *) (bptr+16), _mm256_castps_si256(ymm7));
+      _mm256_stream_si256((__m256i *) (bptr+24), _mm256_castps_si256(ymm10));
+
+      ymm2 = _mm256_movehdup_ps(ymm1);
+      ymm1 = _mm256_moveldup_ps(ymm1);
+      ymm1 = _mm256_mul_ps(ymm1, ymm0);
+      ymm0 = _mm256_shuffle_ps(ymm0, ymm0, 0xB1);
+      ymm2 = _mm256_mul_ps(ymm2, ymm0);
+      ymm0 = _mm256_addsub_ps(ymm1, ymm2);
+
+      ymm5 = _mm256_movehdup_ps(ymm4);
+      ymm4 = _mm256_moveldup_ps(ymm4);
+      ymm4 = _mm256_mul_ps(ymm4, ymm3);
+      ymm3 = _mm256_shuffle_ps(ymm3, ymm3, 0xB1);
+      ymm5 = _mm256_mul_ps(ymm5, ymm3);
+      ymm3 = _mm256_addsub_ps(ymm4, ymm5);
+
+      ymm8 = _mm256_movehdup_ps(ymm7);
+      ymm7 = _mm256_moveldup_ps(ymm7);
+      ymm7 = _mm256_mul_ps(ymm7, ymm6);
+      ymm6 = _mm256_shuffle_ps(ymm6, ymm6, 0xB1);
+      ymm8 = _mm256_mul_ps(ymm8, ymm6);
+      ymm6 = _mm256_addsub_ps(ymm7, ymm8);
+
+      ymm11 = _mm256_movehdup_ps(ymm10);
+      ymm10 = _mm256_moveldup_ps(ymm10);
+      ymm10 = _mm256_mul_ps(ymm10, ymm9);
+      ymm9 = _mm256_shuffle_ps(ymm9, ymm9, 0xB1);
+      ymm11 = _mm256_mul_ps(ymm11, ymm9);
+      ymm9 = _mm256_addsub_ps(ymm10, ymm11);
+
+      _mm256_store_ps(cptr, ymm0);
+      _mm256_store_ps(cptr+8, ymm3);
+      _mm256_store_ps(cptr+16, ymm6);
+      _mm256_store_ps(cptr+24, ymm9);
+
+      aptr += 32;
+      bptr += 32;
+      cptr += 32;
+    }
+  }
+#else
+
+
+  float xr, yr, xi, yi, re, im;
+
+  // Loop over number in batch
+
+/* // Complex formulation
+  for (j = 0; j<NBATCH; j++) {
+    for (i=0; i<NSIZE; i++){
+      // The following logic assumes that
+      // nstride = 2*nsize + padding
+      // Note that all of our inputs are
+      // treated as *real* arrays
+      xr = a[i + 2*j*NSIZE].real();
+      xi = a[i + 2*j*NSIZE].imag();
+      yr = b[i + 2*j*NSIZE].real();
+      yi = b[i + 2*j*NSIZE].imag();
+
+      re = xr*yr + xi*yi;
+      im = xr*yi - xi*yr;
+
+      c[i + j*NSTRIDE] = std::complex<float>(re, im);
+    }
+  }
+*/
+    // Real formulation
+  for (j = 0; j<NBATCH; j++) {
+#pragma omp simd
+    for (i=0; i<NSIZE; i += 2){
+      // The following logic assumes that
+      // nstride = 2*nsize + padding
+      // Note that all of our inputs are
+      // treated as *real* arrays
+      xr = a[i + 2*j*NSIZE];
+      xi = a[i + 2*j*NSIZE + 1];
+      yr = b[i + 2*j*NSIZE];
+      yi = b[i + 2*j*NSIZE + 1];
+
+      re = xr*yr + xi*yi;
+      im = xr*yi - xi*yr;
+
+      c[i + j*NSTRIDE] = re;
+      c[i + j*NSTRIDE + 1] = im;
+    }
+  }
+
+
+
+#endif
+
+}
 
 // *** begin code derived from Colfax International transposition ***
 // This code supplements the white paper
@@ -121,36 +269,18 @@ void DestroyTranspositionPlan(int* plan);
 
 // *** end code derived from Colfax International transposition ***
 
-static inline void ccmul(float * __restrict a, float * __restrict b, float * __restrict c, int N){
-
-int i;
-float xr, yr, xi, yi, re, im;
-
-for (i=0; i<N; i += 2){
-    xr = a[i];
-    xi = a[i+1];
-    yr = b[i];
-    yi = b[i+1];
-
-    re = xr*yr + xi*yi;
-    im = xr*yi - xi*yr;
-
-    c[i] = re;
-    c[i+1] = im;
-}
-
-}
-
 """
 
 hand_fft_libs = ['transpose', 'fftw3f', 'fftw3f_omp', 'gomp', 'm']
 # The following could return system libraries, but oh well,
 # shouldn't hurt anything
 hand_fft_libdirs = libutils.pkg_config_libdirs(['fftw3f'])
+hand_fft_libdirs.append('/home/jwillis/root/libcorr/lib')
 rpath_list = []
 for libdir in hand_fft_libdirs:
     rpath = "-Wl,-rpath="+libdir
     rpath_list.append(rpath)
+rpath_list.append("-Wl,-rpath=/home/jwillis/root/libcorr/lib")
 
 # The code to do an FFT by hand.  Called using weave. Requires:
 #     NJOBS1, NJOBS2, NCHUNK1, and NCHUNK2 to be substituted
@@ -167,28 +297,38 @@ int j;
 #pragma omp parallel for schedule(guided, 1)
 for (j = 0; j < NJOBS1; j++){
    int tid = omp_get_thread_num();
-   ccmul((float *) &aa[j*2*NCHUNK1], (float *) &bb[j*2*NCHUNK1],
-         (float *) &vin[j*2*NCHUNK1], 2*NCHUNK1);
-   fftwf_execute_dft((fftwf_plan) plan1[tid], (fftwf_complex *) &vin[j*NCHUNK1],
-                     (fftwf_complex *) &vout[j*NCHUNK1]);
+
+/*
+   ccmul((std::complex<float> *) &aa[j*NCORR],
+         (std::complex<float> *) &bb[j*NCORR],
+         (std::complex<float> *) &vin[j*NSTRIDE1]);
+*/
+
+
+   ccmul((float *) &aa[j*NCORR],
+         (float *) &bb[j*NCORR],
+         (float *) &vin[j*NSTRIDE1]);
+
+   fftwf_execute_dft((fftwf_plan) plan1[tid], (fftwf_complex *) &vin[j*NSTRIDE1],
+                     (fftwf_complex *) &vout[j*NSTRIDE1]);
 }
 
 // Next, transpose (really need a twiddle before but we're just
 // ballparking)
 
-Transpose((double *) vout, NSIZE, (int *) tplan1[0]);
+Transpose((double *) vout, NTSIZE, (int *) tplan[0]);
 
 // Again, parallel
-#pragma omp parallel for schedule(static, 1)
+#pragma omp parallel for schedule(guided, 1)
 for (j = 0; j < NJOBS2; j++){
    int tid = omp_get_thread_num();
-   fftwf_execute_dft((fftwf_plan) plan2[tid], (fftwf_complex *) &vout[j*NCHUNK2],
-                     (fftwf_complex *) &vout[j*NCHUNK2]);
+   fftwf_execute_dft((fftwf_plan) plan2[tid], (fftwf_complex *) &vout[j*NSTRIDE2],
+                     (fftwf_complex *) &vout[j*NSTRIDE2]);
 }
 
 // Finally, transpose again
 
-Transpose((double *) vout, NSIZE, (int *) tplan2[0]);
+Transpose((double *) vout, NTSIZE, (int *) tplan[0]);
 
 """
 
@@ -225,15 +365,13 @@ class BaseHandFFTProblem(_mb.MultiBenchProblem):
         # Pointers are probably 64 bits; leave enough space just in case
         self.firstplans = _np.zeros(self.ncpus, dtype = _np.uintp)
         self.secondplans = _np.zeros(self.ncpus, dtype = _np.uintp)
-        self.tplan1 = _np.zeros(1, dtype = _np.uintp)
-        self.tplan2 = _np.zeros(1, dtype = _np.uintp)
-        self.nbatch1 = max_chunk/self.nfirst
-        self.nbatch2 = max_chunk/self.nsecond
+        self.tplan = _np.zeros(1, dtype = _np.uintp)
+        self.nbatch1 = max_chunk1/self.nfirst
+        self.nbatch2 = max_chunk2/self.nsecond
 
     def _setup(self):
         # Our transposes are executed using all available threads, and always in-place
-        self.tplan1[0] = plan_transpose(self.nsecond + self.padding).value
-        self.tplan2[0] = plan_transpose(self.nsecond + self.padding).value
+        self.tplan[0] = ctypes.addressof(plan_transpose(self.nsecond + self.padding).contents)
         # Our batched FFTs are executed using a single thread, since they will be called
         # from inside an OpenMP parallel region. We make a plan for each cpu, so that
         # there is not contention to read the plans (and they can stay in cache).
@@ -249,14 +387,40 @@ class BaseHandFFTProblem(_mb.MultiBenchProblem):
 # Now our derived classes
 
 class HandFFTMulProblem(BaseHandFFTProblem):
-    def __init__(self, size, inplace = False, padding = True):
-        super(HandFFTMulProblem, self).__init__(size, inplace = inplace, padding = padding)
-        tmpcode = hand_fft_mul_code.replace('NJOBS1', str( self.size/(2*max_chunk) ) )
-        tmpcode = tmpcode.replace('NJOBS2', str( self.size/max_chunk ) )
-        tmpcode = tmpcode.replace('NCHUNK1', str( (self.nfirst + self.padding) * self.nbatch1))
-        tmpcode = tmpcode.replace('NSIZE', str(self.nfirst) )
-        self.code = tmpcode.replace('NCHUNK2', str( (self.nsecond + self.padding) * self.nbatch2))
+    def __init__(self, size):
+        super(HandFFTMulProblem, self).__init__(size)
+        # For the *code* (not support) the number of jobs is how many
+        # parallel jobs must be completed to filter the entire input
+        tmpcode = hand_fft_mul_code.replace('NJOBS1', str( self.size/max_chunk1 ) )
+        tmpcode = tmpcode.replace('NJOBS2', str( self.size/max_chunk2 ) )
+        # The square size of the matrix (including padding) that we transpose)
+        tmpcode = tmpcode.replace('NTSIZE', str(self.nfirst + self.padding) )
+        # The strides are the number of elements by which we step through vin and vout
+        tmpcode = tmpcode.replace('NSTRIDE1', str( (self.nfirst + self.padding) * self.nbatch1))
+        tmpcode = tmpcode.replace('NSTRIDE2', str( (self.nsecond + self.padding) * self.nbatch2))
+        # NCORR is the number of elements by which we step through stilde and htilde
+        # (which, unlike qtilde = vin or vout, are not padded)
+        self.code = tmpcode.replace('NCORR', str( self.nfirst * self.nbatch1 ))
         del tmpcode
+        # For the support code, NBATCH is how many FFTs in one segment (processed
+        # by a single thread). NSIZE is the size *to be correlated*, which is half
+        # the size of an FFT, because the second half are zero. NSTRIDE is the
+        # distance between successive FFT inputs in vin, which must therefore
+        # include the padding.
+        ## Code below is for treating stilde, htilde, and vin as *Complex* arrays
+
+        #tmpsupport = hand_fft_support.replace('NBATCH', str(self.nbatch1) )
+        #tmpsupport = tmpsupport.replace('NSIZE', str(self.nfirst/2) )
+        #self.support = tmpsupport.replace('NSTRIDE', str(self.nfirst + self.padding) )
+
+        ## Code below is for trating stilde, htilde, and vin as *real* arrays, so
+        ## everything is twice as long
+
+        tmpsupport = hand_fft_support.replace('NBATCH', str(self.nbatch1) )
+        tmpsupport = tmpsupport.replace('NSIZE', str(self.nfirst) )
+        self.support = tmpsupport.replace('NSTRIDE', str( 2*(self.nfirst + self.padding) ))
+
+        del tmpsupport
 
     def execute(self):
         aa = _np.array(self.stilde.data, copy = False)
@@ -265,12 +429,13 @@ class HandFFTMulProblem(BaseHandFFTProblem):
         vout = _np.array(self.outvec.data, copy = False)
         plan1 = _np.array(self.firstplans, copy = False)
         plan2 = _np.array(self.secondplans, copy = False)
-        tplan1 = _np.array(self.tplan1, copy = False)
-        tplan2 = _np.array(self.tplan2, copy = False)
-        inline(self.code, ['aa', 'bb', 'vin', 'vout', 'plan1', 'plan2', 'tplan1', 'tplan2'],
-               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+        tplan = _np.array(self.tplan, copy = False)
+        inline(self.code, ['aa', 'bb', 'vin', 'vout', 'plan1', 'plan2', 'tplan'],
+        #inline(self.code, ['vin', 'vout', 'plan1', 'plan2', 'tplan'],
+#               extra_compile_args=['-fopenmp -march=native -ffast-math -fprefetch-loop-arrays -funroll-loops -O3 -w'],
+               extra_compile_args=['-fopenmp -march=native -O3 -w'],
                libraries = hand_fft_libs, library_dirs = hand_fft_libdirs,
-               support_code = hand_fft_support, extra_link_args = rpath_list,
+               support_code = self.support, extra_link_args = rpath_list,
                verbose = 2, auto_downcast = 1)
 
 

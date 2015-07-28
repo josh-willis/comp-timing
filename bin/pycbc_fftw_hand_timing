@@ -59,11 +59,6 @@ ctx = scheme.from_cli(opt)
 
 prob_class, size = comp_timing.parse_fftw_hand_problem(opt.problem, opt.method)
 
-if (opt.fft_backends[0] == 'fftw'):
-    # We know we gave FFTW parameters on the command line
-    if opt.fftw_input_float_wisdom_file is not None:
-        fft.fftw.import_single_wisdom_from_filename(opt.fftw_input_float_wisdom_file)
-
 with ctx:
     fft.from_cli(opt)
     # Create the problem instance:
